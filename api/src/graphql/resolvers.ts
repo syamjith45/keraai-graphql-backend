@@ -17,7 +17,7 @@ export const resolvers = {
         parkingLots: async (_: any, __: any, { user, supabase }: ContextValue) => {
             if (!user) throw new Error("Unauthorized");
             const { data } = await supabase.from('parking_lots').select('*');
-            return data?.map(lot => {
+            return data?.map((lot: any) => {
                 const slotsArray = lot.slots
                     ? Object.entries(lot.slots).map(([id, status]) => ({ id, status: status as string }))
                     : [];
@@ -42,7 +42,7 @@ export const resolvers = {
                 .eq('user_id', user.uid)
                 .order('start_time', { ascending: false });
 
-            return data?.map(b => ({
+            return data?.map((b: any) => ({
                 id: b.id,
                 userId: b.user_id,
                 lotId: b.lot_id,
