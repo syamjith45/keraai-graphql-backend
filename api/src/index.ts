@@ -23,7 +23,9 @@ const startServer = async () => {
 
     app.use('/graphql', expressMiddleware(server, {
         context: async ({ req }) => {
+            console.log("[(DEBUG) Index] Incoming Request to /graphql");
             const authHeader = req.headers.authorization;
+            console.log("[(DEBUG) Index] Auth Header:", authHeader ? authHeader.substring(0, 20) + "..." : "None");
             let user = undefined;
 
             if (authHeader?.startsWith("Bearer ")) {
@@ -31,11 +33,17 @@ const startServer = async () => {
                 const { data: { user: authUser } } = await supabase.auth.getUser(token);
 
                 if (authUser) {
-                    const role = authUser.app_metadata?.role || "customer";
+                    // Fetch role from profiles table
+                    const { data: profile } = await supabase
+                        .from("profiles")
+                        .select("role")
+                        .eq("id", authUser.id)
+                        .single();
+
                     user = {
                         uid: authUser.id,
                         email: authUser.email,
-                        role: role
+                        role: profile?.role || 'user'
                     };
                 }
             }

@@ -1,8 +1,9 @@
 export const typeDefs = `#graphql
   enum Role {
-    customer
+    user
     operator
     admin
+    superadmin
   }
 
   enum VehicleType {
@@ -49,6 +50,7 @@ export const typeDefs = `#graphql
   type ParkingLotInfo {
     name: String!
     address: String!
+    totalSlots: Int!
   }
 
   type Booking {
@@ -102,7 +104,14 @@ export const typeDefs = `#graphql
 
   type Mutation {
     setupProfile(name: String!, vehicle: VehicleInput!): User!
+    
+    # Role Management
+    assignRole(userId: ID!, role: Role!): User!
+    createAdmin(email: String!, name: String!): User!
+
+    # Parking Lot Management
     addParkingLot(name: String!, address: String!, totalSlots: Int!, pricePerHour: Float!, lat: Float!, lng: Float!, slotPrefix: String!): ParkingLot!
+    
     createBooking(lotId: ID!, slot: String!, duration: Int!): Booking!
     verifyBooking(bookingId: ID!): VerifyBookingResponse!
     

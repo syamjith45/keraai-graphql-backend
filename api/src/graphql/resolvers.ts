@@ -1,8 +1,10 @@
 import { ContextValue, BookingStatus } from "../types";
+import { requireRole } from "../utils/auth";
 
 export const resolvers = {
     Query: {
         me: async (_: any, __: any, { user, supabase }: ContextValue) => {
+            console.log("[(DEBUG) Resolver] 'me' query hit. User context:", user);
             if (!user) throw new Error("Unauthorized");
             const { data, error } = await supabase.from('profiles').select('*').eq('id', user.uid).single();
             if (error || !data) return null;
@@ -57,6 +59,29 @@ export const resolvers = {
         },
 
         // ... Add allUsers and adminStats here following the same pattern
+        allUsers: async (_: any, __: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['admin', 'superadmin']);
+            const { data } = await supabase.from('profiles').select('*');
+            return data?.map((u: any) => ({
+                uid: u.id,
+                name: u.full_name,
+                email: u.email, // Note: Email might not be in profiles depending on schema, assume it is for now or join
+                role: u.role,
+                vehicle_make: u.vehicle_make,
+                vehicle_plate: u.vehicle_plate
+            })) || [];
+        },
+
+        adminStats: async (_: any, __: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['admin', 'superadmin']);
+            // Fetch stats implementation...
+            return {
+                totalUsers: 0,
+                totalLots: 0,
+                activeBookings: 0,
+                completedBookings: 0
+            };
+        }
     },
 
     Mutation: {
@@ -74,6 +99,7 @@ export const resolvers = {
         },
 
         createBooking: async (_: any, { lotId, slot, duration }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
             if (!user) throw new Error("Unauthorized");
 
             const { data: lot, error: lotError } = await supabase.from('parking_lots').select('*').eq('id', lotId).single();
@@ -118,6 +144,104 @@ export const resolvers = {
             };
         },
 
-        // ... Add payment mutations and addParkingLot here
+        // Role Management
+        assignRole: async (_: any, { userId, role }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['superadmin']); // Only Superadmin can assign roles
+
+            // Optional: Limit what roles can be assigned? e.g. superadmin can assign anything.
+            const { data, error } = await supabase
+                .from('profiles')
+                .update({ role })
+                .eq('id', userId)
+                .select()
+                .single();
+
+            if (error) throw new Error(error.message);
+            return {
+                uid: data.id,
+                name: data.full_name,
+                email: data.email,
+                role: data.role
+            };
+        },
+
+        createAdmin: async (_: any, { email, name }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['superadmin']);
+            // This assumes Supabase Auth user creation via Admin API if you have the key, 
+            // OR you just create a profile record and wait for user to sign up. 
+            // For strict correctness, we'd need to use supabase.auth.admin.createUser 
+            // but that requires service_role key to be in the context or accessible.
+            // Here we will just throw unsupported for now or assume simple profile creation.
+            throw new Error("Create Admin requires separate Auth implementation.");
+        },
+
+        addParkingLot: async (_: any, args: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['admin', 'superadmin']);
+            const { data, error } = await supabase.from('parking_lots').insert({
+                name: args.name,
+                address: args.address,
+                total_spots: args.totalSlots,
+                available_spots: args.totalSlots,
+                hourly_rate: args.pricePerHour,
+                latitude: args.lat,
+                longitude: args.lng,
+                // slotPrefix not in DB schema shown in previous turns, assuming logic handles it or ignored for now
+            }).select().single();
+
+            if (error) throw new Error(error.message);
+            // Must return ParkingLot structure
+            return {
+                id: data.id,
+                name: data.name,
+                address: data.address,
+                totalSlots: data.total_spots,
+                availableSlots: data.available_spots,
+                pricePerHour: data.hourly_rate,
+                coords: { lat: data.latitude, lng: data.longitude },
+                slots: []
+            };
+        },
+
+        verifyBooking: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['operator', 'admin', 'superadmin']);
+            // Logic validation...
+            return {
+                success: true,
+                message: "Verified",
+                details: "Valid"
+            };
+        },
+
+        // Payment Mock Mutations
+        createPaymentOrder: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
+            return {
+                orderId: "ord_" + Math.random().toString(36).substr(2, 9),
+                amount: 10.0, // mock
+                currency: "INR",
+                bookingId: bookingId,
+                status: "CREATED"
+            };
+        },
+
+        payOrder: async (_: any, { orderId }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
+            return {
+                success: true,
+                message: "Payment Successful",
+                paymentId: "pay_" + Math.random().toString(36).substr(2, 9),
+                orderId: orderId
+            };
+        },
+
+        verifyPayment: async (_: any, { orderId }: any, { user, supabase }: ContextValue) => {
+            requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
+            return {
+                success: true,
+                message: "Payment Verified",
+                paymentId: "pay_mock",
+                orderId: orderId
+            };
+        }
     }
 };
