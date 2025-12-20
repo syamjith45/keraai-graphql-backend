@@ -55,7 +55,7 @@ export const typeDefs = `#graphql
 
   type Booking {
     id: ID!
-    userId: String!
+    userId: String
     lotId: String!
     parkingLotInfo: ParkingLotInfo!
     slotNumber: String!
@@ -64,6 +64,9 @@ export const typeDefs = `#graphql
     durationHours: Int!
     totalAmount: Float!
     status: String!
+    bookingType: String
+    walkInName: String
+    walkInPhone: String
   }
 
   type AdminStats {
@@ -94,12 +97,27 @@ export const typeDefs = `#graphql
       orderId: String
   }
 
+  type SlotAvailability {
+    lotId: ID!
+    totalSpots: Int!
+    availableSpots: Int!
+    availableSlotIds: [String!]!
+    hasAvailability: Boolean!
+  }
+
+  type BookingActionResponse {
+    success: Boolean!
+    message: String!
+    bookingId: ID!
+  }
+
   type Query {
     me: User
     parkingLots: [ParkingLot!]!
     myBookings: [Booking!]!
     allUsers: [User!]!
     adminStats: AdminStats!
+    checkSlotAvailability(lotId: ID!): SlotAvailability!
   }
 
   type Mutation {
@@ -113,11 +131,25 @@ export const typeDefs = `#graphql
     addParkingLot(name: String!, address: String!, totalSlots: Int!, pricePerHour: Float!, lat: Float!, lng: Float!, slotPrefix: String!): ParkingLot!
     
     createBooking(lotId: ID!, slot: String!, duration: Int!): Booking!
-    verifyBooking(bookingId: ID!): VerifyBookingResponse!
+    
+    # Operator Booking
+    createOperatorBooking(lotId: ID!, slot: String, duration: Int!, walkInName: String!, walkInPhone: String): Booking!
+    
+    cancelBooking(bookingId: ID!): BookingActionResponse!
+    completeBooking(bookingId: ID!): BookingActionResponse!
+    
+    verifyBooking(bookingId: ID!): Booking!
     
     # Payment Mock Mutations
     createPaymentOrder(bookingId: ID!): PaymentOrder!
     payOrder(orderId: ID!): PaymentResult!
     verifyPayment(orderId: ID!): PaymentResult!
+    
+    # Operator Assignment
+    assignOperator(userId: ID!, lotId: ID!): Boolean!
+    revokeOperator(userId: ID!, lotId: ID!): Boolean!
+    
+    # Maintenance / Repair
+    initializeSlots(lotId: ID!, prefix: String): Boolean!
   }
 `;

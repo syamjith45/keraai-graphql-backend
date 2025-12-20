@@ -1,0 +1,17 @@
+src/graphql/resolvers.ts(62,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(75,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(131,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(262,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(276,17): error TS18048: 'user' is possibly 'undefined'.
+src/graphql/resolvers.ts(276,61): error TS18048: 'user' is possibly 'undefined'.
+src/graphql/resolvers.ts(333,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(398,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(416,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(421,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(457,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(478,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(509,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(520,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(530,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(540,13): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
+src/graphql/resolvers.ts(563,14): error TS2775: Assertions require every name in the call target to be declared with an explicit type annotation.
