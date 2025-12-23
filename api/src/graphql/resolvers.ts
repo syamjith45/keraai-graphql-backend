@@ -81,31 +81,43 @@ export const resolvers = {
             };
         },
 
-        // NEW: Check slot availability
-        checkSlotAvailability: async (_: any, { lotId }: any, { user, supabase }: ContextValue) => {
+        // UPDATED: Time-based availability check using DB Function
+        checkSlotAvailability: async (_: any, { lotId, startTime, endTime }: any, { user, supabase }: ContextValue) => {
             if (!user) throw new Error("Unauthorized");
             
-            const { data: lot, error } = await supabase
+            const start = startTime ? new Date(startTime).toISOString() : new Date().toISOString();
+            const end = endTime ? new Date(endTime).toISOString() : new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+
+            // 1. Get total spots from parking_lots table
+            const { data: lot, error: lotError } = await supabase
                 .from('parking_lots')
-                .select('slots, available_spots, total_spots')
+                .select('total_spots, available_spots')
                 .eq('id', lotId)
                 .single();
 
-            if (error || !lot) {
-                throw new Error("Parking lot not found");
+            if (lotError || !lot) throw new Error("Parking lot not found");
+
+            // 2. Call RPC to get available slots
+            const { data: availableSlotIds, error: rpcError } = await supabase
+                .rpc('get_available_slots', {
+                    p_lot_id: lotId,
+                    p_start_time: start,
+                    p_end_time: end
+                });
+
+            if (rpcError) {
+                console.error("RPC Error:", rpcError);
+                throw new Error("Failed to check availability");
             }
 
-            const slots = (lot.slots as Record<string, string>) || {};
-            const availableSlots = Object.entries(slots)
-                .filter(([_, status]) => status === 'available')
-                .map(([id, _]) => id);
+            const availableCount = availableSlotIds ? availableSlotIds.length : 0;
 
             return {
                 lotId: lotId,
                 totalSpots: lot.total_spots,
-                availableSpots: lot.available_spots,
-                availableSlotIds: availableSlots,
-                hasAvailability: lot.available_spots > 0
+                availableSpots: availableCount,
+                availableSlotIds: availableSlotIds || [],
+                hasAvailability: availableCount > 0
             };
         },
     },
@@ -125,118 +137,80 @@ export const resolvers = {
         },
 
         // ============================================
-        // UPDATED: Create Booking with Auto-Assign
+        // UPDATED: Create Booking (Using DB Logic)
         // ============================================
-        createBooking: async (_: any, { lotId, slot, duration }: any, { user, supabase }: ContextValue) => {
+        createBooking: async (_: any, { lotId, slot, startTime, duration }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
             if (!user) throw new Error("Unauthorized");
+            if (!lotId) throw new Error("Parking Lot ID is required");
 
-            // Step 1: Fetch parking lot details
+            const bookingStart = startTime ? new Date(startTime).toISOString() : new Date().toISOString();
+            const bookingEnd = new Date(new Date(bookingStart).getTime() + duration * 3600 * 1000).toISOString();
+
+            // 1. If slot is provided, validate it. If not, auto-assign.
+            let targetSlot = slot;
+            
+            if (!targetSlot) {
+                 const { data: availableSlots, error: rpcError } = await supabase
+                    .rpc('get_available_slots', {
+                        p_lot_id: lotId,
+                        p_start_time: bookingStart,
+                        p_end_time: bookingEnd
+                    });
+                
+                if (rpcError || !availableSlots || availableSlots.length === 0) {
+                     throw new Error("No slots available for the requested time.");
+                }
+                targetSlot = availableSlots[0];
+            } else {
+                 // Verify specific slot availability
+                 const { data: isAvailable, error: checkError } = await supabase
+                    .rpc('is_slot_available', {
+                        p_lot_id: lotId,
+                        p_slot_number: targetSlot,
+                        p_start_time: bookingStart,
+                        p_end_time: bookingEnd
+                    });
+                
+                if (checkError || !isAvailable) {
+                    throw new Error(`Slot ${targetSlot} is not available.`);
+                }
+            }
+
+            // 2. Fetch lot details for price (and optimistic concurrency update later)
             const { data: lot, error: lotError } = await supabase
                 .from('parking_lots')
                 .select('*')
                 .eq('id', lotId)
                 .single();
 
-            if (lotError || !lot) {
-                throw new Error("Parking lot not found.");
-            }
+            if (lotError || !lot) throw new Error("Parking lot not found.");
 
-            // Step 2: Check if there are available spots
-            if (lot.available_spots <= 0) {
-                throw new Error("No available spots in this parking lot.");
-            }
-
-            // Step 3: Determine which slot to assign
-            let assignedSlot: string;
-            let currentSlots = (lot.slots as Record<string, string>) || {};
-
-            if (slot) {
-                // Frontend provided a specific slot - validate it
-                if (!currentSlots[slot]) {
-                    throw new Error(`Slot ${slot} does not exist in this parking lot.`);
-                }
-                if (currentSlots[slot] !== 'available') {
-                    throw new Error(`Slot ${slot} is not available.`);
-                }
-                assignedSlot = slot;
-            } else {
-                // Auto-assign: Find first available slot
-                if (Object.keys(currentSlots).length === 0) {
-                    // Slots not initialized - generate slot dynamically
-                    console.warn(`Parking lot ${lotId} has empty slots. Generating slot dynamically.`);
-                    const occupiedCount = lot.total_spots - lot.available_spots;
-                    const slotNumber = occupiedCount + 1;
-                    const row = String.fromCharCode(65 + Math.floor((slotNumber - 1) / 10)); // A, B, C...
-                    const col = ((slotNumber - 1) % 10) + 1; // 1-10
-                    assignedSlot = `${row}${col}`;
-                    
-                    // Initialize this slot in the slots object
-                    currentSlots[assignedSlot] = 'occupied';
-                } else {
-                    // Find first available slot in existing slots
-                    const availableSlot = Object.keys(currentSlots).find(key => currentSlots[key] === 'available');
-                    
-                    if (!availableSlot) {
-                        throw new Error("All slots are occupied. Please try another parking lot.");
-                    }
-                    assignedSlot = availableSlot;
-                }
-            }
-
-            // Step 4: Mark slot as occupied
-            currentSlots[assignedSlot] = 'occupied';
-
-            // Step 5: Update parking lot (atomic operation)
-            const { error: updateError } = await supabase
-                .from('parking_lots')
-                .update({
-                    slots: currentSlots,
-                    available_spots: lot.available_spots - 1
-                })
-                .eq('id', lotId)
-                .eq('available_spots', lot.available_spots); // Optimistic concurrency check
-
-            if (updateError) {
-                console.error('Failed to update parking lot:', updateError);
-                throw new Error("Failed to reserve slot. Please try again.");
-            }
-
-            // Step 6: Calculate start and end times
-            const startTime = new Date();
-            const endTime = new Date(startTime.getTime() + duration * 3600 * 1000);
-
-            // Step 7: Create booking record
+            // 3. Create Booking
             const { data: booking, error: bookingError } = await supabase
                 .from('bookings')
                 .insert({
                     user_id: user.uid,
                     lot_id: lotId,
-                    start_time: startTime.toISOString(),
-                    end_time: endTime.toISOString(),
+                    start_time: bookingStart,
+                    end_time: bookingEnd,
                     total_cost: lot.hourly_rate * duration,
                     status: 'pending',
-                    qr_code_data: `${lot.id}_${assignedSlot}`
+                    qr_code_data: `${lotId}_${targetSlot}`,
+                    booking_type: 'self'
                 })
                 .select('*, parking_lots(name, address)')
                 .single();
 
             if (bookingError) {
-                // Rollback: Release the slot
-                console.error('Booking creation failed, rolling back slot assignment:', bookingError);
-                currentSlots[assignedSlot] = 'available';
-                await supabase
-                    .from('parking_lots')
-                    .update({
-                        slots: currentSlots,
-                        available_spots: lot.available_spots
-                    })
-                    .eq('id', lotId);
-                
-                throw new Error(`Failed to create booking: ${bookingError.message}`);
+                console.error("Booking failed:", bookingError);
+                throw new Error(`Booking failed: ${bookingError.message}`);
             }
 
-            // Step 8: Return booking response
+            // 4. Update Cache (Best Effort)
+            // We call the sync function to let the DB handle the cache consistency
+            await supabase.rpc('sync_lot_cache', { p_lot_id: lotId });
+
             return {
                 id: booking.id,
                 userId: booking.user_id,
@@ -246,145 +220,86 @@ export const resolvers = {
                     address: booking.parking_lots.address,
                     totalSlots: lot.total_spots
                 },
-                slotNumber: assignedSlot,
+                slotNumber: targetSlot,
                 startTime: booking.start_time,
                 endTime: booking.end_time,
                 durationHours: duration,
                 totalAmount: booking.total_cost,
-                status: 'ACTIVE'
+                status: 'PENDING'
             };
         },
 
         // ============================================
-        // NEW: Create Operator Booking (Walk-in Users)
+        // UPDATED: Create Operator Booking (Walk-in)
         // ============================================
-        createOperatorBooking: async (_: any, { lotId, slot, duration, walkInName, walkInPhone }: any, { user, supabase }: ContextValue) => {
-            // Only operators, admins, and superadmins can create walk-in bookings
+        createOperatorBooking: async (_: any, { lotId, slot, startTime, duration, walkInName, walkInPhone }: any, { user, supabase }: ContextValue) => {
             if (!user) throw new Error("Unauthorized");
             requireRole(user, ['operator', 'admin', 'superadmin']);
 
-            // Step 1: Fetch parking lot details
-            const { data: lot, error: lotError } = await supabase
-                .from('parking_lots')
-                .select('*')
-                .eq('id', lotId)
-                .single();
-
-            if (lotError || !lot) {
-                throw new Error("Parking lot not found.");
-            }
-
-            // Step 2: If user is an operator, verify they're assigned to this lot
+            // Verify assignment if operator
             if (user.role === 'operator') {
-                const { data: assignment, error: assignmentError } = await supabase
+                const { data: assignment } = await supabase
                     .from('operator_assignments')
                     .select('id')
                     .eq('operator_id', user.uid)
                     .eq('lot_id', lotId)
                     .single();
-
-                if (assignmentError || !assignment) {
-                    throw new Error("Access Denied: You are not assigned to manage this parking lot.");
-                }
+                 if (!assignment) throw new Error("Access Denied: Not assigned to this lot.");
             }
 
-            // Step 3: Check if there are available spots
-            if (lot.available_spots <= 0) {
-                throw new Error("No available spots in this parking lot.");
-            }
+            const bookingStart = startTime ? new Date(startTime).toISOString() : new Date().toISOString();
+            const bookingEnd = new Date(new Date(bookingStart).getTime() + duration * 3600 * 1000).toISOString();
 
-            // Step 4: Determine which slot to assign
-            let assignedSlot: string;
-            let currentSlots = (lot.slots as Record<string, string>) || {};
-
-            if (slot) {
-                // Operator selected a specific slot - validate it
-                if (!currentSlots[slot]) {
-                    throw new Error(`Slot ${slot} does not exist in this parking lot.`);
-                }
-                if (currentSlots[slot] !== 'available') {
-                    throw new Error(`Slot ${slot} is not available.`);
-                }
-                assignedSlot = slot;
+            // 1. Slot Assignment
+            let targetSlot = slot;
+            if (!targetSlot) {
+                 const { data: availableSlots } = await supabase
+                    .rpc('get_available_slots', {
+                        p_lot_id: lotId,
+                        p_start_time: bookingStart,
+                        p_end_time: bookingEnd
+                    });
+                if (!availableSlots || availableSlots.length === 0) throw new Error("No slots available.");
+                targetSlot = availableSlots[0];
             } else {
-                // Auto-assign: Find first available slot
-                if (Object.keys(currentSlots).length === 0) {
-                    // Slots not initialized - generate slot dynamically
-                    console.warn(`Parking lot ${lotId} has empty slots. Generating slot dynamically.`);
-                    const occupiedCount = lot.total_spots - lot.available_spots;
-                    const slotNumber = occupiedCount + 1;
-                    const row = String.fromCharCode(65 + Math.floor((slotNumber - 1) / 10)); // A, B, C...
-                    const col = ((slotNumber - 1) % 10) + 1; // 1-10
-                    assignedSlot = `${row}${col}`;
-                    currentSlots[assignedSlot] = 'occupied';
-                } else {
-                    // Find first available slot
-                    const availableSlot = Object.keys(currentSlots).find(key => currentSlots[key] === 'available');
-                    
-                    if (!availableSlot) {
-                        throw new Error("All slots are occupied. Please try another parking lot.");
-                    }
-                    assignedSlot = availableSlot;
-                }
+                 const { data: isAvailable } = await supabase
+                    .rpc('is_slot_available', {
+                        p_lot_id: lotId,
+                        p_slot_number: targetSlot,
+                        p_start_time: bookingStart,
+                        p_end_time: bookingEnd
+                    });
+                if (!isAvailable) throw new Error(`Slot ${targetSlot} is not available.`);
             }
 
-            // Step 5: Mark slot as occupied
-            currentSlots[assignedSlot] = 'occupied';
+            // 2. Fetch lot for price
+            const { data: lot } = await supabase.from('parking_lots').select('hourly_rate, total_spots').eq('id', lotId).single();
+            if (!lot) throw new Error("Lot not found");
 
-            // Step 6: Update parking lot
-            const { error: updateError } = await supabase
-                .from('parking_lots')
-                .update({
-                    slots: currentSlots,
-                    available_spots: lot.available_spots - 1
-                })
-                .eq('id', lotId)
-                .eq('available_spots', lot.available_spots); // concurrency control
-
-            if (updateError) {
-                console.error('Failed to update parking lot:', updateError);
-                throw new Error("Failed to reserve slot. Please try again.");
-            }
-
-            // Step 7: Calculate times
-            const startTime = new Date();
-            const endTime = new Date(startTime.getTime() + duration * 3600 * 1000);
-
-            // Step 8: Create booking for walk-in user
+            // 3. Create Booking (Walk-ins are confirmed immediately)
             const { data: booking, error: bookingError } = await supabase
                 .from('bookings')
                 .insert({
                     user_id: null,
                     lot_id: lotId,
-                    start_time: startTime.toISOString(),
-                    end_time: endTime.toISOString(),
+                    start_time: bookingStart,
+                    end_time: bookingEnd,
                     total_cost: lot.hourly_rate * duration,
-                    status: 'active',
-                    qr_code_data: `${lot.id}_${assignedSlot}`,
+                    status: 'confirmed', 
+                    qr_code_data: `${lotId}_${targetSlot}`,
                     booking_type: 'walk_in',
                     walk_in_name: walkInName,
-                    walkInPhone: walkInPhone || null,
+                    walk_in_phone: walkInPhone || null,
                     booked_by: user.uid
                 })
                 .select('*, parking_lots(name, address)')
                 .single();
 
-            if (bookingError) {
-                // Rollback
-                console.error('Booking creation failed, rolling back:', bookingError);
-                currentSlots[assignedSlot] = 'available';
-                await supabase
-                    .from('parking_lots')
-                    .update({
-                        slots: currentSlots,
-                        available_spots: lot.available_spots
-                    })
-                    .eq('id', lotId);
-                
-                throw new Error(`Failed to create booking: ${bookingError.message}`);
-            }
+             if (bookingError) throw new Error(bookingError.message);
 
-            // Step 9: Return booking response
+            // 4. Update Cache
+            await supabase.rpc('sync_lot_cache', { p_lot_id: lotId });
+
             return {
                 id: booking.id,
                 userId: null,
@@ -394,12 +309,12 @@ export const resolvers = {
                     address: booking.parking_lots.address,
                     totalSlots: lot.total_spots
                 },
-                slotNumber: assignedSlot,
+                slotNumber: targetSlot,
                 startTime: booking.start_time,
                 endTime: booking.end_time,
                 durationHours: duration,
                 totalAmount: booking.total_cost,
-                status: 'ACTIVE',
+                status: 'CONFIRMED',
                 bookingType: 'walk_in',
                 walkInName: walkInName,
                 walkInPhone: walkInPhone
@@ -407,16 +322,15 @@ export const resolvers = {
         },
 
         // ============================================
-        // NEW: Cancel Booking
+        // UPDATED: Cancel Booking
         // ============================================
         cancelBooking: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
             if (!user) throw new Error("Unauthorized");
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
             
-            // Fetch booking
             const { data: booking, error: bookingError } = await supabase
                 .from('bookings')
-                .select('id, user_id, lot_id, qr_code_data, status')
+                .select('id, user_id, lot_id, qr_code_data, status, start_time')
                 .eq('id', bookingId)
                 .single();
 
@@ -424,7 +338,7 @@ export const resolvers = {
                 throw new Error("Booking not found");
             }
 
-            // Check if user owns this booking (unless admin/operator)
+            // Authorization check
             if (user.role === 'user' && booking.user_id !== user.uid) {
                 throw new Error("You can only cancel your own bookings");
             }
@@ -433,10 +347,7 @@ export const resolvers = {
                 throw new Error("Cannot cancel a completed or already cancelled booking");
             }
 
-            // Extract slot
-            const slotNumber = booking.qr_code_data?.split('_')[1];
-            
-            // Update booking to cancelled
+            // Update booking status
             const { error: updateError } = await supabase
                 .from('bookings')
                 .update({ status: 'cancelled' })
@@ -446,28 +357,45 @@ export const resolvers = {
                 throw new Error(`Failed to cancel booking: ${updateError.message}`);
             }
 
-            // Release the slot if it exists
+            // Update cache (best effort)
+            const slotNumber = booking.qr_code_data?.split('_')[1];
+            
             if (slotNumber) {
-                const { data: lot, error: lotError } = await supabase
-                    .from('parking_lots')
-                    .select('slots, available_spots')
-                    .eq('id', booking.lot_id)
-                    .single();
+                try {
+                    const { data: lot } = await supabase
+                        .from('parking_lots')
+                        .select('slots, available_spots')
+                        .eq('id', booking.lot_id)
+                        .single();
 
-                if (!lotError && lot) {
-                    const currentSlots = (lot.slots as Record<string, string>) || {};
-                    
-                    if (currentSlots[slotNumber]) {
-                        currentSlots[slotNumber] = 'available';
-                        
-                        await supabase
-                            .from('parking_lots')
-                            .update({
-                                slots: currentSlots,
-                                available_spots: lot.available_spots + 1
-                            })
-                            .eq('id', booking.lot_id);
+                    if (lot) {
+                        // Check if any other confirmed bookings exist for this slot
+                        const { data: otherBookings } = await supabase
+                            .from('bookings')
+                            .select('id')
+                            .eq('lot_id', booking.lot_id)
+                            .eq('qr_code_data', booking.qr_code_data)
+                            .in('status', ['pending', 'confirmed'])
+                            .neq('id', bookingId);
+
+                        if (!otherBookings || otherBookings.length === 0) {
+                            const updatedSlots = { ...(lot.slots as Record<string, string>) };
+                            updatedSlots[slotNumber] = 'available';
+                            
+                            await supabase
+                                .from('parking_lots')
+                                .update({
+                                    slots: updatedSlots,
+                                    available_spots: Math.min(
+                                        lot.available_spots + 1,
+                                        Object.keys(updatedSlots).length
+                                    )
+                                })
+                                .eq('id', booking.lot_id);
+                        }
                     }
+                } catch (error) {
+                    console.warn('[Cache update failed - non-critical]', error);
                 }
             }
 
@@ -479,12 +407,11 @@ export const resolvers = {
         },
 
         // ============================================
-        // NEW: Complete Booking
+        // UPDATED: Complete Booking
         // ============================================
         completeBooking: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['operator', 'admin', 'superadmin']);
             
-            // Fetch booking to get lot_id and qr_code_data (which contains slot info)
             const { data: booking, error: bookingError } = await supabase
                 .from('bookings')
                 .select('id, lot_id, qr_code_data, status')
@@ -495,51 +422,144 @@ export const resolvers = {
                 throw new Error("Booking not found");
             }
 
-            // Extract slot from qr_code_data (format: "lotId_slotNumber")
-            const slotNumber = booking.qr_code_data?.split('_')[1];
-            if (!slotNumber) {
-                throw new Error("Invalid booking data");
+            if (booking.status === 'completed') {
+                throw new Error("Booking already completed");
             }
 
+            if (booking.status === 'cancelled') {
+                throw new Error("Cannot complete a cancelled booking");
+            }
+
+            const slotNumber = booking.qr_code_data?.split('_')[1];
+
             // Update booking status
-            const { error: updateBookingError } = await supabase
+            const { error: updateError } = await supabase
                 .from('bookings')
                 .update({ status: 'completed' })
                 .eq('id', bookingId);
 
-            if (updateBookingError) {
-                throw new Error(`Failed to complete booking: ${updateBookingError.message}`);
+            if (updateError) {
+                throw new Error(`Failed to complete booking: ${updateError.message}`);
             }
 
-            // Release the slot
-            const { data: lot, error: lotError } = await supabase
-                .from('parking_lots')
-                .select('slots, available_spots')
-                .eq('id', booking.lot_id)
-                .single();
+            // Release the slot (update cache)
+            if (slotNumber) {
+                try {
+                    const { data: lot } = await supabase
+                        .from('parking_lots')
+                        .select('slots, available_spots')
+                        .eq('id', booking.lot_id)
+                        .single();
 
-            if (lotError || !lot) {
-                throw new Error("Parking lot not found");
-            }
+                    if (lot) {
+                        // Check if any other confirmed bookings exist for this slot
+                        const { data: otherBookings } = await supabase
+                            .from('bookings')
+                            .select('id')
+                            .eq('lot_id', booking.lot_id)
+                            .eq('qr_code_data', booking.qr_code_data)
+                            .in('status', ['pending', 'confirmed'])
+                            .neq('id', bookingId);
 
-            const currentSlots = (lot.slots as Record<string, string>) || {};
-            
-            if (currentSlots[slotNumber]) {
-                currentSlots[slotNumber] = 'available';
-                
-                await supabase
-                    .from('parking_lots')
-                    .update({
-                        slots: currentSlots,
-                        available_spots: lot.available_spots + 1
-                    })
-                    .eq('id', booking.lot_id);
+                        if (!otherBookings || otherBookings.length === 0) {
+                            const updatedSlots = { ...(lot.slots as Record<string, string>) };
+                            updatedSlots[slotNumber] = 'available';
+                            
+                            await supabase
+                                .from('parking_lots')
+                                .update({
+                                    slots: updatedSlots,
+                                    available_spots: Math.min(
+                                        lot.available_spots + 1,
+                                        Object.keys(updatedSlots).length
+                                    )
+                                })
+                                .eq('id', booking.lot_id);
+                        }
+                    }
+                } catch (error) {
+                    console.warn('[Cache update failed - non-critical]', error);
+                }
             }
 
             return {
                 success: true,
                 message: "Booking completed and slot released",
                 bookingId: booking.id
+            };
+        },
+
+        // ============================================
+        // UPDATED: Verify Booking (QR Scan)
+        // ============================================
+        verifyBooking: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
+            if (!user) throw new Error("Unauthorized");
+            requireRole(user, ['operator', 'admin', 'superadmin']);
+            
+            // Fetch the booking with parking lot info
+            const { data: booking, error: bookingError } = await supabase
+                .from('bookings')
+                .select('*, parking_lots(name, address, total_spots)')
+                .eq('id', bookingId)
+                .single();
+
+            if (bookingError || !booking) throw new Error("Booking not found");
+
+            // If user is an operator, verify they're assigned to this lot
+            if (user.role === 'operator') {
+                const { data: assignment, error: assignmentError } = await supabase
+                    .from('operator_assignments')
+                    .select('id')
+                    .eq('operator_id', user.uid)
+                    .eq('lot_id', booking.lot_id)
+                    .single();
+
+                if (assignmentError || !assignment) {
+                    throw new Error("Access Denied: You are not assigned to manage this parking lot.");
+                }
+            }
+
+            // Status Check
+            if (booking.status === 'completed') {
+                throw new Error("Booking is already completed.");
+            }
+            if (booking.status === 'cancelled') {
+                throw new Error("Booking is cancelled.");
+            }
+
+            // Update status to 'confirmed' (Checked In) if it's 'pending'
+            let updatedBooking = booking;
+            if (booking.status === 'pending') {
+                const { data, error } = await supabase
+                    .from('bookings')
+                    .update({ status: 'confirmed' })
+                    .eq('id', bookingId)
+                    .select('*, parking_lots(name, address, total_spots)')
+                    .single();
+                
+                if (error) throw new Error("Failed to update booking status.");
+                updatedBooking = data;
+            }
+
+            // Return Booking object
+            return {
+                id: updatedBooking.id,
+                userId: updatedBooking.user_id,
+                lotId: updatedBooking.lot_id,
+                parkingLotInfo: { 
+                    name: updatedBooking.parking_lots.name, 
+                    address: updatedBooking.parking_lots.address,
+                    totalSlots: updatedBooking.parking_lots.total_spots || 0
+                },
+                slotNumber: updatedBooking.qr_code_data?.split('_')[1] || "N/A",
+                startTime: updatedBooking.start_time,
+                endTime: updatedBooking.end_time,
+                durationHours: 0,
+                totalAmount: updatedBooking.total_cost,
+                status: 'CONFIRMED',
+                bookingType: updatedBooking.booking_type,
+                walkInName: updatedBooking.walk_in_name,
+                walkInPhone: updatedBooking.walk_in_phone
             };
         },
 
@@ -626,77 +646,6 @@ export const resolvers = {
             return true;
         },
 
-        verifyBooking: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
-            if (!user) throw new Error("Unauthorized");
-            requireRole(user, ['operator', 'admin', 'superadmin']);
-            
-            // 1. Fetch the booking with parking lot info
-            const { data: booking, error: bookingError } = await supabase
-                .from('bookings')
-                .select('*, parking_lots(name, address, total_spots)')
-                .eq('id', bookingId)
-                .single();
-
-            if (bookingError || !booking) throw new Error("Booking not found");
-
-            // 2. If user is an operator, verify they're assigned to this lot
-            if (user.role === 'operator') {
-                const { data: assignment, error: assignmentError } = await supabase
-                    .from('operator_assignments')
-                    .select('id')
-                    .eq('operator_id', user.uid)
-                    .eq('lot_id', booking.lot_id)
-                    .single();
-
-                if (assignmentError || !assignment) {
-                    throw new Error("Access Denied: You are not assigned to manage this parking lot.");
-                }
-            }
-
-            // 3. Status Check
-            if (booking.status === 'completed') {
-                throw new Error("Booking is already completed.");
-            }
-            if (booking.status === 'cancelled') {
-                throw new Error("Booking is cancelled.");
-            }
-
-            // 4. Update status to 'active' (Checked In) if not already
-            let updatedBooking = booking;
-            if (booking.status !== 'active') {
-                const { data, error } = await supabase
-                    .from('bookings')
-                    .update({ status: 'active' })
-                    .eq('id', bookingId)
-                    .select('*, parking_lots(name, address, total_spots)')
-                    .single();
-                
-                if (error) throw new Error("Failed to update booking status.");
-                updatedBooking = data;
-            }
-
-            // 5. Return Booking object
-            return {
-                id: updatedBooking.id,
-                userId: updatedBooking.user_id,
-                lotId: updatedBooking.lot_id,
-                parkingLotInfo: { 
-                    name: updatedBooking.parking_lots.name, 
-                    address: updatedBooking.parking_lots.address,
-                    totalSlots: updatedBooking.parking_lots.total_spots || 0 // Default or fetch if needed
-                },
-                slotNumber: updatedBooking.qr_code_data?.split('_')[1] || "N/A",
-                startTime: updatedBooking.start_time,
-                endTime: updatedBooking.end_time,
-                durationHours: 0, // Calculate if needed, but schema says Int!
-                totalAmount: updatedBooking.total_cost,
-                status: 'ACTIVE', // Return normalized status
-                bookingType: updatedBooking.booking_type,
-                walkInName: updatedBooking.walk_in_name,
-                walkInPhone: updatedBooking.walk_in_phone
-            };
-        },
-
         createPaymentOrder: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
             return {
@@ -718,8 +667,18 @@ export const resolvers = {
             };
         },
 
-        verifyPayment: async (_: any, { orderId }: any, { user, supabase }: ContextValue) => {
+        verifyPayment: async (_: any, { orderId, bookingId }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
+            
+            // IMPORTANT: After payment verification, update booking status to 'confirmed'
+            if (bookingId) {
+                await supabase
+                    .from('bookings')
+                    .update({ status: 'confirmed' })
+                    .eq('id', bookingId)
+                    .eq('status', 'pending'); // Only update if still pending
+            }
+            
             return {
                 success: true,
                 message: "Payment Verified",

@@ -2,10 +2,11 @@ import { SupabaseClient } from '@supabase/supabase-js';
 
 // Enums used in Logic
 export enum BookingStatus {
-    ACTIVE = 'ACTIVE',
-    COMPLETED = 'Completed',
-    CANCELLED = 'Cancelled',
-    PAID = 'PAID'
+    PENDING = 'pending',
+    CONFIRMED = 'confirmed',
+    ACTIVE = 'active',
+    COMPLETED = 'completed',
+    CANCELLED = 'cancelled'
 }
 
 // Context Interface (Used by Resolvers)

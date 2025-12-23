@@ -117,7 +117,7 @@ export const typeDefs = `#graphql
     myBookings: [Booking!]!
     allUsers: [User!]!
     adminStats: AdminStats!
-    checkSlotAvailability(lotId: ID!): SlotAvailability!
+    checkSlotAvailability(lotId: ID!, startTime: String, endTime: String): SlotAvailability!
   }
 
   type Mutation {
@@ -130,10 +130,10 @@ export const typeDefs = `#graphql
     # Parking Lot Management
     addParkingLot(name: String!, address: String!, totalSlots: Int!, pricePerHour: Float!, lat: Float!, lng: Float!, slotPrefix: String!): ParkingLot!
     
-    createBooking(lotId: ID!, slot: String!, duration: Int!): Booking!
+    createBooking(lotId: ID!, slot: String, startTime: String, duration: Int!): Booking!
     
     # Operator Booking
-    createOperatorBooking(lotId: ID!, slot: String, duration: Int!, walkInName: String!, walkInPhone: String): Booking!
+    createOperatorBooking(lotId: ID!, slot: String, startTime: String, duration: Int!, walkInName: String!, walkInPhone: String): Booking!
     
     cancelBooking(bookingId: ID!): BookingActionResponse!
     completeBooking(bookingId: ID!): BookingActionResponse!
@@ -143,7 +143,7 @@ export const typeDefs = `#graphql
     # Payment Mock Mutations
     createPaymentOrder(bookingId: ID!): PaymentOrder!
     payOrder(orderId: ID!): PaymentResult!
-    verifyPayment(orderId: ID!): PaymentResult!
+    verifyPayment(orderId: ID!, bookingId: ID): PaymentResult!
     
     # Operator Assignment
     assignOperator(userId: ID!, lotId: ID!): Boolean!
