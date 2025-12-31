@@ -54,7 +54,8 @@ export const resolvers = {
                 endTime: b.end_time,
                 durationHours: 0,
                 totalAmount: b.total_cost,
-                status: b.status.toUpperCase()
+                status: b.status.toUpperCase(),
+                vehicleNumber: b.vehicle_number
             })) || [];
         },
 
@@ -139,7 +140,7 @@ export const resolvers = {
         // ============================================
         // UPDATED: Create Booking (Using DB Logic)
         // ============================================
-        createBooking: async (_: any, { lotId, slot, startTime, duration }: any, { user, supabase }: ContextValue) => {
+        createBooking: async (_: any, { lotId, slot, startTime, duration, vehicleNumber }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
             if (!user) throw new Error("Unauthorized");
             if (!lotId) throw new Error("Parking Lot ID is required");
@@ -186,6 +187,13 @@ export const resolvers = {
 
             if (lotError || !lot) throw new Error("Parking lot not found.");
 
+            // Resolve Vehicle Number (Fallback to profile if not provided)
+            let finalVehicleNumber = vehicleNumber;
+            if (!finalVehicleNumber) {
+                 const { data: profile } = await supabase.from('profiles').select('vehicle_plate').eq('id', user.uid).single();
+                 finalVehicleNumber = profile?.vehicle_plate;
+            }
+
             // 3. Create Booking
             const { data: booking, error: bookingError } = await supabase
                 .from('bookings')
@@ -197,7 +205,8 @@ export const resolvers = {
                     total_cost: lot.hourly_rate * duration,
                     status: 'pending',
                     qr_code_data: `${lotId}_${targetSlot}`,
-                    booking_type: 'self'
+                    booking_type: 'self',
+                    vehicle_number: finalVehicleNumber
                 })
                 .select('*, parking_lots(name, address)')
                 .single();
@@ -225,14 +234,15 @@ export const resolvers = {
                 endTime: booking.end_time,
                 durationHours: duration,
                 totalAmount: booking.total_cost,
-                status: 'PENDING'
+                status: 'PENDING',
+                vehicleNumber: booking.vehicle_number
             };
         },
 
         // ============================================
         // UPDATED: Create Operator Booking (Walk-in)
         // ============================================
-        createOperatorBooking: async (_: any, { lotId, slot, startTime, duration, walkInName, walkInPhone }: any, { user, supabase }: ContextValue) => {
+        createOperatorBooking: async (_: any, { lotId, slot, startTime, duration, walkInName, walkInPhone, vehicleNumber }: any, { user, supabase }: ContextValue) => {
             if (!user) throw new Error("Unauthorized");
             requireRole(user, ['operator', 'admin', 'superadmin']);
 
@@ -290,7 +300,8 @@ export const resolvers = {
                     booking_type: 'walk_in',
                     walk_in_name: walkInName,
                     walk_in_phone: walkInPhone || null,
-                    booked_by: user.uid
+                    booked_by: user.uid,
+                    vehicle_number: vehicleNumber
                 })
                 .select('*, parking_lots(name, address)')
                 .single();
@@ -317,7 +328,8 @@ export const resolvers = {
                 status: 'CONFIRMED',
                 bookingType: 'walk_in',
                 walkInName: walkInName,
-                walkInPhone: walkInPhone
+                walkInPhone: walkInPhone,
+                vehicleNumber: booking.vehicle_number
             };
         },
 
@@ -559,7 +571,8 @@ export const resolvers = {
                 status: 'CONFIRMED',
                 bookingType: updatedBooking.booking_type,
                 walkInName: updatedBooking.walk_in_name,
-                walkInPhone: updatedBooking.walk_in_phone
+                walkInPhone: updatedBooking.walk_in_phone,
+                vehicleNumber: updatedBooking.vehicle_number
             };
         },
 
@@ -648,22 +661,102 @@ export const resolvers = {
 
         createPaymentOrder: async (_: any, { bookingId }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
+            if (!user) throw new Error("Unauthorized");
+
+            // 1) Get booking
+            const { data: booking, error: bookingError } = await supabase
+                .from('bookings')
+                .select('id, user_id, total_cost, status')
+                .eq('id', bookingId)
+                .single();
+
+            if (bookingError || !booking) {
+                throw new Error("Booking not found");
+            }
+
+            if (booking.status !== 'pending') {
+                throw new Error("Only pending bookings can be paid");
+            }
+
+            const amount = booking.total_cost;
+
+            // 2) Create payment row
+            const mockProviderId = "mock_ord_" + Math.random().toString(36).substr(2, 9);
+
+            const { data: payment, error: paymentError } = await supabase
+                .from('payments')
+                .insert({
+                    booking_id: booking.id,
+                    user_id: booking.user_id || user.uid,
+                    amount,
+                    status: 'pending',
+                    provider_id: mockProviderId,
+                })
+                .select()
+                .single();
+
+            if (paymentError || !payment) {
+                throw new Error("Failed to create payment order");
+            }
+
+            // 3) Return order info
             return {
-                orderId: "ord_" + Math.random().toString(36).substr(2, 9),
-                amount: 10.0,
+                orderId: payment.id,
+                amount: payment.amount,
                 currency: "INR",
                 bookingId: bookingId,
-                status: "CREATED"
+                status: "PENDING"
             };
         },
 
         payOrder: async (_: any, { orderId }: any, { user, supabase }: ContextValue) => {
             requireRole(user, ['user', 'operator', 'admin', 'superadmin']);
+
+            // 1) Find payment row
+            const { data: payment, error: paymentError } = await supabase
+                .from('payments')
+                .select('id, booking_id, status, provider_id')
+                .eq('id', orderId)
+                .single();
+
+            if (paymentError || !payment) {
+                throw new Error("Payment order not found");
+            }
+
+            if (payment.status === 'success') {
+                return {
+                    success: true,
+                    message: "Payment already successful",
+                    paymentId: payment.id,
+                    orderId
+                };
+            }
+
+            // 2) Mock success
+            const { error: updateError } = await supabase
+                .from('payments')
+                .update({
+                    status: 'success',
+                    provider_id: payment.provider_id || 'mock_provider'
+                })
+                .eq('id', orderId);
+
+            if (updateError) {
+                throw new Error("Failed to update payment status");
+            }
+
+            // 3) Update booking to confirmed
+            await supabase
+                .from('bookings')
+                .update({ status: 'confirmed' })
+                .eq('id', payment.booking_id)
+                .eq('status', 'pending');
+
             return {
                 success: true,
-                message: "Payment Successful",
-                paymentId: "pay_" + Math.random().toString(36).substr(2, 9),
-                orderId: orderId
+                message: "Payment Successful (mock)",
+                paymentId: payment.id,
+                orderId
             };
         },
 

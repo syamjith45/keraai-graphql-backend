@@ -67,6 +67,7 @@ export const typeDefs = `#graphql
     bookingType: String
     walkInName: String
     walkInPhone: String
+    vehicleNumber: String
   }
 
   type AdminStats {
@@ -130,10 +131,10 @@ export const typeDefs = `#graphql
     # Parking Lot Management
     addParkingLot(name: String!, address: String!, totalSlots: Int!, pricePerHour: Float!, lat: Float!, lng: Float!, slotPrefix: String!): ParkingLot!
     
-    createBooking(lotId: ID!, slot: String, startTime: String, duration: Int!): Booking!
+    createBooking(lotId: ID!, slot: String, startTime: String, duration: Int!, vehicleNumber: String): Booking!
     
     # Operator Booking
-    createOperatorBooking(lotId: ID!, slot: String, startTime: String, duration: Int!, walkInName: String!, walkInPhone: String): Booking!
+    createOperatorBooking(lotId: ID!, slot: String, startTime: String, duration: Int!, walkInName: String!, walkInPhone: String, vehicleNumber: String): Booking!
     
     cancelBooking(bookingId: ID!): BookingActionResponse!
     completeBooking(bookingId: ID!): BookingActionResponse!
