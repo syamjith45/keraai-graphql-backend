@@ -723,7 +723,7 @@ export const resolvers = {
                 throw new Error("Payment order not found");
             }
 
-            if (payment.status === 'success') {
+            if (payment.status === 'succeeded') {
                 return {
                     success: true,
                     message: "Payment already successful",
@@ -736,13 +736,14 @@ export const resolvers = {
             const { error: updateError } = await supabase
                 .from('payments')
                 .update({
-                    status: 'success',
+                    status: 'succeeded',
                     provider_id: payment.provider_id || 'mock_provider'
                 })
                 .eq('id', orderId);
 
             if (updateError) {
-                throw new Error("Failed to update payment status");
+                console.error("Payment update error:", updateError);
+                throw new Error(`Failed to update payment status: ${updateError.message} - ${updateError.details || ''}`);
             }
 
             // 3) Update booking to confirmed
